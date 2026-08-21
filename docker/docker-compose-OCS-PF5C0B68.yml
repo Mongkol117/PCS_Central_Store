@@ -1,0 +1,110 @@
+name: central-store-shelf
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: dev
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: development
+      NODE_OPTIONS: "--max-old-space-size=4096 --import tsx"
+      DISABLE_HTTPS: "true"
+      HOST: "0.0.0.0"
+      PORT: "3000"
+      SERVER_URL: "http://localhost:3500"
+      DATABASE_URL: "postgresql://shelf:shelf@postgres:5432/shelf?schema=public"
+      DIRECT_URL: "postgresql://shelf:shelf@postgres:5432/shelf?schema=public"
+      ENABLE_PREMIUM_FEATURES: "false"
+      DISABLE_SSO: "true"
+      SMTP_HOST: "maildev"
+      SMTP_PORT: "1025"
+      SMTP_USER: ""
+      SMTP_PWD: ""
+      SMTP_FROM: "Central Store <no-reply@central-store.local>"
+    ports:
+      - "3500:3000"
+    volumes:
+      - ..:/workspace
+      - pnpm-store:/pnpm/store
+      - root-node-modules:/workspace/node_modules
+      - webapp-node-modules:/workspace/apps/webapp/node_modules
+      - database-node-modules:/workspace/packages/database/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      maildev:
+        condition: service_started
+    command: >
+      sh -lc "pnpm install --frozen-lockfile &&
+              pnpm db:generate &&
+              pnpm db:deploy-migration &&
+              pnpm --filter @shelf/webapp start"
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: shelf
+      POSTGRES_USER: shelf
+      POSTGRES_PASSWORD: shelf
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shelf -d shelf"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: shelfminio
+      MINIO_ROOT_PASSWORD: shelfminio123
+    ports:
+      - "9010:9000"
+      - "9011:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 shelfminio shelfminio123 &&
+      mc mb --ignore-existing local/shelf-dev &&
+      mc anonymous set download local/shelf-dev
+      "
+    restart: "no"
+
+  maildev:
+    image: maildev/maildev:2.2.1
+    restart: unless-stopped
+    ports:
+      - "1080:1080"
+      - "1025:1025"
+
+volumes:
+  postgres-data:
+  minio-data:
+  pnpm-store:
+  root-node-modules:
+  webapp-node-modules:
+  database-node-modules:
